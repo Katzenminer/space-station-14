@@ -15,6 +15,7 @@ namespace Content.Shared.VendingMachines
         /// PrototypeID for the vending machine's inventory, see <see cref="VendingMachineInventoryPrototype"/>
         /// </summary>
         [DataField("pack", customTypeSerializer: typeof(PrototypeIdSerializer<VendingMachineInventoryPrototype>), required: true)]
+        [AutoNetworkedField]
         public string PackPrototypeId = string.Empty;
 
         /// <summary>

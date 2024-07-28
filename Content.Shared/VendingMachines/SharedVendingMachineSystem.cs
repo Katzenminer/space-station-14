@@ -130,5 +130,9 @@ public abstract partial class SharedVendingMachineSystem : EntitySystem
                     inventory.Add(id, new VendingMachineInventoryEntry(type, id, restock));
             }
         }
+        if (Resolve(uid, ref component))
+        {
+            Dirty(uid,component);
+        }
     }
 }
