@@ -14,6 +14,7 @@ using Content.Shared.Mobs.Components;
 using Content.Shared.Mobs.Systems;
 using Content.Shared.Objectives.Systems;
 using Content.Shared.Players;
+using Content.Shared.Silicons.StationAi;
 using Content.Shared.Speech;
 using Content.Shared.Whitelist;
 using Robust.Shared.Containers;
@@ -32,20 +33,17 @@ namespace Content.Shared.Mind;
 public abstract partial class SharedMindSystem : EntitySystem
 {
     [Dependency] private readonly ISharedAdminLogManager _adminLogger = default!;
-    [Dependency] private readonly IRobustRandom _random = default!;
+    [Dependency] private readonly EntityWhitelistSystem _whitelist = default!;
+    [Dependency] private readonly MetaDataSystem _metadata = default!;
     [Dependency] private readonly MobStateSystem _mobState = default!;
     [Dependency] private readonly SharedObjectivesSystem _objectives = default!;
-    [Dependency] private readonly SharedPlayerSystem _player = default!;
-    [Dependency] private readonly MetaDataSystem _metadata = default!;
-    [Dependency] private readonly EntityWhitelistSystem _whitelist = default!;
     [Dependency] private readonly SharedContainerSystem _container = default!;
     [Dependency] private readonly SharedTransformSystem _transform = default!;
     [Dependency] private readonly SharedPhysicsSystem _physics = default!;
+    [Dependency] private readonly SharedPlayerSystem _player = default!;
 
     [ViewVariables]
     protected readonly Dictionary<NetUserId, EntityUid> UserMinds = new();
-
-    private HashSet<Entity<MindComponent>> _pickingMinds = new();
 
     private readonly EntProtoId _mindProto = "MindBase";
 
@@ -660,7 +658,7 @@ public abstract partial class SharedMindSystem : EntitySystem
     /// </summary>
     public void FilterMinds(HashSet<Entity<MindComponent>> minds, MindFilter filter, EntityUid? exclude = null)
     {
-        minds.RemoveWhere(mind => filter.Filter(mind, exclude, EntityManager, this));
+        minds.RemoveWhere(mind => filter.Filter(mind, exclude, EntityManager));
     }
 
     /// <summary>
