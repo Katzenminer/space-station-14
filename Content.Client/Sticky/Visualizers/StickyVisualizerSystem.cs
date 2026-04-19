@@ -5,13 +5,11 @@ namespace Content.Client.Sticky.Visualizers;
 
 public sealed class StickyVisualizerSystem : VisualizerSystem<StickyVisualizerComponent>
 {
-    private EntityQuery<SpriteComponent> _spriteQuery;
+    [Dependency] private readonly EntityQuery<SpriteComponent> _spriteQuery = default!;
 
     public override void Initialize()
     {
         base.Initialize();
-
-        _spriteQuery = GetEntityQuery<SpriteComponent>();
 
         SubscribeLocalEvent<StickyVisualizerComponent, ComponentInit>(OnInit);
     }
@@ -33,6 +31,6 @@ public sealed class StickyVisualizerSystem : VisualizerSystem<StickyVisualizerCo
             return;
 
         var drawDepth = isStuck ? comp.StuckDrawDepth : comp.OriginalDrawDepth;
-        args.Sprite.DrawDepth = drawDepth;
+        SpriteSystem.SetDrawDepth((uid, args.Sprite), drawDepth);
     }
 }
