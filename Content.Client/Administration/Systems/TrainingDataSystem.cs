@@ -21,6 +21,7 @@ internal sealed class TrainingDataSystem : EntitySystem
     [Dependency] private readonly IResourceManager _resMan = default!;
     [Dependency] private readonly IEyeManager _eyeMan = default!;
     [Dependency] private readonly SharedTransformSystem _transform = default!;
+    [Dependency] private readonly SpriteSystem _sprite = default!;
 
     private static readonly ResPath TrainingDataPath = new("/TrainingData");
 
@@ -92,7 +93,8 @@ internal sealed class TrainingDataSystem : EntitySystem
 
             var eye = new FixedEye
             {
-                Position = new MapCoordinates(Vector2.Zero, mapId)
+                Position = new MapCoordinates(Vector2.Zero, mapId),
+                Zoom = Vector2.One
             };
 
             var oldEye = _eyeMan.CurrentEye;
@@ -114,16 +116,18 @@ internal sealed class TrainingDataSystem : EntitySystem
     private async Task CaptureAllAngles(EntityUid entity, MapId mapId, FixedEye eye, TransformComponent xform)
     {
         var log = Logger.GetSawmill("trainingdata");
-        var position = _transform.GetWorldPosition(entity);
-        log.Info($"Starting capture for entity {entity} at position {position} on map {mapId}");
 
         for (_currentAngleIndex = 0; _currentAngleIndex < Angles.Length; _currentAngleIndex++)
         {
             for (_currentDistanceIndex = 0; _currentDistanceIndex < Distances.Length; _currentDistanceIndex++)
             {
+                if (!EntityManager.EntityExists(entity))
+                    return;
+
                 var angle = Angles[_currentAngleIndex];
                 var distance = Distances[_currentDistanceIndex];
 
+                var position = _transform.GetWorldPosition(entity);
                 var cameraOffset = new Vector2(
                     (float)(Math.Cos(angle) * distance),
                     (float)(Math.Sin(angle) * distance)
@@ -137,26 +141,14 @@ internal sealed class TrainingDataSystem : EntitySystem
                 if (!EntityManager.EntityExists(entity))
                     return;
 
-                var screenPos = _eyeMan.WorldToScreen(position);
                 var screenSize = _clyde.ScreenSize;
 
-                var spriteBounds = GetEntityScreenBounds(entity, screenPos, screenSize);
+                var spriteBounds = GetEntityScreenBounds(entity, screenSize);
                 if (!spriteBounds.HasValue)
                 {
                     log.Info($"Skipped sample: sprite bounds null (angle={Angles[_currentAngleIndex].Degrees:F0}deg, dist={distance:F0})");
                     continue;
                 }
-
-                var bounds = spriteBounds.Value;
-                var centerX = (bounds.Left + bounds.Right) / 2f / screenSize.X;
-                var centerY = (bounds.Top + bounds.Bottom) / 2f / screenSize.Y;
-                var width = (bounds.Right - bounds.Left) / screenSize.X;
-                var height = (bounds.Bottom - bounds.Top) / screenSize.Y;
-
-                centerX = Math.Clamp(centerX, 0.001f, 0.999f);
-                centerY = Math.Clamp(centerY, 0.001f, 0.999f);
-                width = Math.Clamp(width, 0.001f, 0.999f);
-                height = Math.Clamp(height, 0.001f, 0.999f);
 
                 var image = await TakeScreenshot();
                 if (image == null)
@@ -165,57 +157,88 @@ internal sealed class TrainingDataSystem : EntitySystem
                     continue;
                 }
 
+                var bounds = spriteBounds.Value;
+                var imgWidth = image.Width;
+                var imgHeight = image.Height;
+                var centerX = (bounds.Left + bounds.Right) / 2f / imgWidth;
+                var centerY = (bounds.Top + bounds.Bottom) / 2f / imgHeight;
+                var width = (bounds.Right - bounds.Left) / imgWidth;
+                var height = (bounds.Bottom - bounds.Top) / imgHeight;
+
+                centerX = Math.Clamp(centerX, 0.001f, 0.999f);
+                centerY = Math.Clamp(centerY, 0.001f, 0.999f);
+                width = Math.Clamp(width, 0.001f, 0.999f);
+                height = Math.Clamp(height, 0.001f, 0.999f);
+
+                log.Info($"Saved sample {_currentSample}: angle={Angles[_currentAngleIndex].Degrees:F0}deg, dist={distance:F0}, box=({bounds.Left:F0},{bounds.Top:F0},{bounds.Right:F0},{bounds.Bottom:F0}), img={imgWidth}x{imgHeight}, yolo={width:F6}x{height:F6}");
+
                 var fileName = $"sample_{_currentSample:D6}";
                 _currentSample++;
 
                 await SaveImage(image, fileName);
                 await SaveYoloLabel(fileName, _classId, centerX, centerY, width, height);
-
-                log.Info($"Saved sample {_currentSample}: angle={Angles[_currentAngleIndex].Degrees:F0}deg, dist={distance:F0}");
             }
         }
     }
 
-    private Box2? GetEntityScreenBounds(EntityUid entity, Vector2 centerScreen, Vector2 screenSize)
+    private Box2? GetEntityScreenBounds(EntityUid entity, Vector2 screenSize)
     {
-        if (!TryComp(entity, out SpriteComponent? sprite))
+        if (!TryComp(entity, out SpriteComponent? sprite) || !TryComp(entity, out TransformComponent? xform))
             return null;
 
-        var spriteSize = GetSpritePixelSize(sprite);
-        if (spriteSize.Equals(Vector2i.Zero))
+        if (!sprite.Visible)
             return null;
 
-        var scale = sprite.Scale;
-        var scaledWidth = spriteSize.X * scale.X;
-        var scaledHeight = spriteSize.Y * scale.Y;
+        // Get the local bounding box. This properly unions all visible layers
+        // accounting for offsets, per-layer scales, and the sprite's own scale.
+        var localBounds = _sprite.GetLocalBounds((entity, sprite));
 
-        var halfWidth = scaledWidth / 2f;
-        var halfHeight = scaledHeight / 2f;
+        // Reject degenerate bounds (no visible sprite content)
+        if (localBounds.Width < 0.001f || localBounds.Height < 0.001f)
+            return null;
 
-        var screenX = centerScreen.X - halfWidth;
-        var screenY = centerScreen.Y - halfHeight;
+        var worldPos = _transform.GetWorldPosition(xform);
+        var worldRot = _transform.GetWorldRotation(xform);
+        var eyeRot = _eyeMan.CurrentEye.Rotation;
 
-        var minX = Math.Clamp(screenX, 0, screenSize.X);
-        var minY = Math.Clamp(screenY, 0, screenSize.Y);
-        var maxX = Math.Clamp(screenX + scaledWidth, 0, screenSize.X);
-        var maxY = Math.Clamp(screenY + scaledHeight, 0, screenSize.Y);
+        // Compute sprite's effective world-space rotation and offset.
+        var composition = sprite.NoRotation
+            ? sprite.Rotation - eyeRot
+            : sprite.Rotation + worldRot;
+
+        var effectiveOffset = sprite.Offset == Vector2.Zero
+            ? Vector2.Zero
+            : sprite.NoRotation
+                ? (-eyeRot).RotateVec(sprite.Offset)
+                : worldRot.RotateVec(sprite.Offset);
+
+        var center = worldPos + effectiveOffset;
+
+        // Transform the four local corners to world space, then to screen space.
+        var minX = float.MaxValue;
+        var minY = float.MaxValue;
+        var maxX = float.MinValue;
+        var maxY = float.MinValue;
+
+        foreach (var local in new[] { localBounds.TopLeft, localBounds.TopRight, localBounds.BottomRight, localBounds.BottomLeft })
+        {
+            var worldCorner = center + composition.RotateVec(local);
+            var screen = _eyeMan.WorldToScreen(worldCorner);
+            minX = Math.Min(minX, screen.X);
+            minY = Math.Min(minY, screen.Y);
+            maxX = Math.Max(maxX, screen.X);
+            maxY = Math.Max(maxY, screen.Y);
+        }
+
+        minX = Math.Clamp(minX, 0, screenSize.X);
+        minY = Math.Clamp(minY, 0, screenSize.Y);
+        maxX = Math.Clamp(maxX, 0, screenSize.X);
+        maxY = Math.Clamp(maxY, 0, screenSize.Y);
 
         if (maxX - minX < 1 || maxY - minY < 1)
             return null;
 
         return new Box2(minX, minY, maxX, maxY);
-    }
-
-    private Vector2i GetSpritePixelSize(SpriteComponent sprite)
-    {
-        var size = Vector2i.Zero;
-        foreach (var layer in sprite.AllLayers)
-        {
-            if (!layer.Visible)
-                continue;
-            size = Vector2i.ComponentMax(size, layer.PixelSize);
-        }
-        return size;
     }
 
     private async Task<Image<Rgb24>?> TakeScreenshot()
